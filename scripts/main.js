@@ -38,6 +38,8 @@ function init() {
 	main.cvs.height = main.sizeY
 	main.ctx = main.cvs.getContext('2d')
 	main.ctx.imageSmoothingEnabled = false
+	main.ctx.willReadFrequently = true
+	main.pyws = new WebSocket("ws://127.0.0.1:9999/")
 
 	main.ctx.fillStyle = 'white'
 	main.ctx.fillRect(0, 0, main.sizeX, main.sizeY)
@@ -82,7 +84,13 @@ function run() {
 	onresize()
 
 	main.frame = 0
-	main.brate.set(0.539685, true)
+	main.frames_sent = 0
+	main.lastSent = -1
+	main.lastPaint = -1
+	// main.brate.set(0.539685, true)
+	main.brate.set(1., true)
+	// 250 = 0.68420
+	// 20 = 0.57937005
 	main.timer.play()
 	main.view.setDistance(16, Math.max(main.sizeX, main.sizeY) * 1.1)
 	main.view.setBorders(main.sizeX, main.sizeY, 100)
@@ -92,18 +100,30 @@ function run() {
 }
 
 function tick(t) {
-	updateTransformVP()
+	// updateTransformVP()
+	// if (main.pyws.bufferedAmount > 0) {
+	// 	return;  // wait until frame has been sent over the network
+	let i;
+// }
 
-	if(main.brate.changed) {
-		main.brate.changed = false
-
-		var pos  = main.brate.position * 2 - 1
-		,   dir  = pos / Math.abs(pos)
-		,   rate = dir * Math.pow(Math.abs(pos), 3) * 5000
-
-		main.timer.rate = isNaN(dir) ? 0 : rate
-		dom.text(main.vrate, f.hround(main.timer.rate))
+	if (main.frames_sent >= 1000) {
+		if (main.pyws.readyState !== WebSocket.CLOSED) {
+			main.pyws.send("end");
+			main.pyws.close(1000);
+		}
+		return;
 	}
+
+	// if(main.brate.changed) {
+	// 	main.brate.changed = false
+	//
+	// 	var pos  = main.brate.position * 2 - 1
+	// 	,   dir  = pos / Math.abs(pos)
+	// 	,   rate = dir * Math.pow(Math.abs(pos), 3) * 5000
+	//
+	// 	main.timer.rate = isNaN(dir) ? 0 : rate
+	// 	dom.text(main.vrate, f.hround(main.timer.rate))
+	// }
 
 	if(main.bseek.changed) {
 		main.bseek.changed = false
@@ -129,35 +149,46 @@ function tick(t) {
 	}
 
 	var hits = frames > 0 ? main.hitColors : main.hitBackwd
-	,   step = frames / Math.abs(frames)
+	,   step = 1
 	,   end = main.frame + frames
 
-	let updateTimestamp = -1;
-	for(var i = main.frame; i !== end; i += step) {
-		main.grid[main.hitCoords[i]] = hits[i]
-		if (main.timestamps.hasOwnProperty(i)) {
-			updateTimestamp = main.timestamps[i];
+	let shouldSend = false;
+	for(var frame_iter = main.frame; frame_iter !== end; frame_iter += step) {
+		main.grid[main.hitCoords[frame_iter]] = hits[frame_iter]
+		if (main.timestamps.hasOwnProperty(frame_iter) && main.frame !== frame_iter ) {
+			// updateTimestamp = main.timestamps[i];
+			if (main.timestamps[frame_iter] - main.lastSent > 30_000) {
+				shouldSend = true;
+				main.lastSent = main.timestamps[frame_iter];
+				break;
+			}
 		}
 	}
-	main.frame = end
+	main.frame = frame_iter
 
-	if (updateTimestamp > 0) {
-		dom.text(main.timeDisplay, new Date(updateTimestamp).toISOString())
-	}
+	const d = main.idat.data;
+	for(i = 0; i < main.grid.length; i++) {
+		const g = main.grid[i] * 3;
+		const p = i * 4;
 
-	var d = main.idat.data
-	for(var i = 0; i < main.grid.length; i++) {
-		var g = main.grid[i] * 3
-		var p = i * 4
-
-		d[p +0] = main.colors[g +0]
+		d[p] = main.colors[g]
 		d[p +1] = main.colors[g +1]
 		d[p +2] = main.colors[g +2]
 	}
-	main.ctx.putImageData(main.idat, 0, 0)
+	if (main.timestamps[frame_iter] - main.lastPaint > 240_000){
+		main.ctx.putImageData(main.idat, 0, 0);
+		main.lastPaint = main.timestamps[frame_iter];
+	}
 
 	main.bseek.set(main.frame / main.hitLength)
 	dom.text(main.vseek, main.frame)
+
+	if (shouldSend && main.pyws.readyState !== WebSocket.CLOSED){
+		if (main.frames_sent < 1000) {
+			main.pyws.send(main.idat.data.buffer);
+			main.frames_sent++;
+		}
+	}
 }
 
 function onresize() {
